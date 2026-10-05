@@ -19,7 +19,7 @@ Enjoy.
 ``` sbt
 // NOTE: change the version to the most recent release version from the repo
 
-libraryDependencies += "com.alexdupre" % "cloudwatch-logback-appender" % "3.1" % Runtime
+libraryDependencies += "com.alexdupre" % "cloudwatch-logback-appender" % "3.2" % Runtime
 ```
 
 ## Dependencies
@@ -28,8 +28,14 @@ By default the appender has dependencies on logback (duh) but also the cloudwatc
 packages.  You can add an exclusion for these packages if you want to depend on different versions.
 
 ``` sbt
-libraryDependencies ++= Seq("cloudwatchlogs", "imds").map(service => "software.amazon.awssdk" % service % "2.25.60")
+libraryDependencies += "ch.qos.logback" % "logback-classic" % "1.6.5"
+
+libraryDependencies ++= Seq("cloudwatchlogs", "imds").map(service => "software.amazon.awssdk" % service % "2.55.11")
 ```
+
+**NOTE:** Version 3.2 and later require logback 1.6 or later because logback 1.6 replaced the
+`PatternLayout.DEFAULT_CONVERTER_MAP` that `Ec2PatternLayout` relies on.  Stay on version 3.1 if you need to run
+against logback 1.5.x.
 
 # logback.xml Configuration
 
@@ -61,6 +67,7 @@ adds support for additional tokens:
 | `in` | Same as instanceName. |
 | `instanceId` | ID of the EC2 instance. |
 | `iid` | Same as instanceId. |
+| `taskId` | ID of the ECS task, read from the `ECS_CONTAINER_METADATA_URI_V4` container metadata. |
 | `uuid` | Random UUID as a string |
 | `hostName` | Name of the host from `InetAddress.getLocalHost()`. |
 | `host` | Same as hostName. |
@@ -85,9 +92,16 @@ This will generate a log-stream name with the prefix "general-" and then with th
 date in UTC timezone, and a random UUID.
 
 **NOTE:** The instance-name and instance-id tokens will only work when running on an EC2 instance that
-supports the EC2MetadataUtils methods for looking up the information.  You can call
-`Ec2InstanceNameConverter.setInstanceName(...)` or `Ec2InstanceIdConverter.setInstanceId(...)` early in your
-program if you want to set them yourself. 
+supports the EC2MetadataUtils methods for looking up the information, and the task-id token only when running
+under ECS.  You can call `Ec2InstanceNameConverter.setInstanceName(...)`, `Ec2InstanceIdConverter.setInstanceId(...)`,
+or `TaskIdConverter.setTaskId(...)` early in your program if you want to set them yourself.  If you are running
+outside of EC2 and ECS then set `disableAwsMetadata` to true so that the appender doesn't try to reach the metadata
+services at all.
+
+**NOTE:** As of version 3.2 these additional tokens are registered on the `Ec2PatternLayout` instance itself and no
+longer on the layout map shared by the whole application.  They are available in the `logStream` name and in any
+`<layout class="com.j256.cloudwatchlogbackappender.Ec2PatternLayout">` stanza, but not in an unrelated
+`PatternLayout` or `PatternLayoutEncoder` elsewhere in your `logback.xml`.
 
 **NOTE:** `logGroup` must match the regex pattern `[.\-_/#A-Za-z0-9]+`.  `logStream` cannot contain the ':' character
 which will be replaced by '_'.
@@ -121,6 +135,10 @@ Here is the complete list of the appender properties.
 | `truncateEventMessages` | *boolean* | true | If an event it too large, should the message be truncated.  If false then it will be sent to emergency appender. |
 | `copyEvents` | *boolean* | true | Copies the event for logging by the background thread. |
 | `printRejectedEvents` | *boolean* | false | Print any rejected events to stderr if the emergency appender doesn't work. |
+| `endpointUrl` | *string* | none | Override the CloudWatch endpoint, for example to point at LocalStack.  By default the standard endpoint for the region is used. |
+| `retentionDays` | *int* | 0 | Retention period applied to a log-group that this appender creates.  0 keeps the CloudWatch default of never expiring.  An existing log-group is left alone. |
+| `waitForAllEvents` | *boolean* | true | On stop, wait for the queued events to be written to CloudWatch instead of quitting immediately. |
+| `disableAwsMetadata` | *boolean* | false | Set to true when not running under EC2 or ECS so that the appender doesn't try to download the instance and task metadata.  Values you set yourself with the converter setters are left alone. |
 
 ## Emergency Appender
 
@@ -162,7 +180,8 @@ the hacker only have limited access to our AWS services.  To get the appender to
 the following IAM policy is required to create the log group and put log events to CloudWatch.
 
 The `logs:CreateLogGroup` and `logs:CreateLogStream` actions are only required if the appender is creating the
-log-group and stream itself (see `createLogDests` option above).
+log-group and stream itself (see `createLogDests` option above), and `logs:PutRetentionPolicy` only if you also set
+the `retentionDays` option.
 
 ```json
 {

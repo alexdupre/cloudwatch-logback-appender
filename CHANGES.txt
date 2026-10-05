@@ -1,3 +1,13 @@
+3.2: 10/5/2026
+	* Updated to Logback 1.6.x, which is now the minimum required version.
+	* Ec2PatternLayout registers its conversion words per-instance instead of in the global layout map.
+	* Added the 'endpointUrl' setting to override the CloudWatch endpoint, for example for LocalStack.
+	* Added the 'retentionDays' setting to set the retention period on a log-group that we create.
+	* Added the 'waitForAllEvents' setting (default true) to post the queued events before stopping.
+	* Added the 'disableAwsMetadata' setting for when you are not running under EC2 or ECS.
+	* Added the '%taskId' expansion for running under ECS.
+	* Stopped using the deprecated shared DefaultCredentialsProvider singleton, which we closed on stop.
+
 3.1: 5/29/2024
 	* Removed dependency on ec2, try to get instance name from metadata.
 	* Gracefully stop the worker thread, by sending pending log events on shutdown.

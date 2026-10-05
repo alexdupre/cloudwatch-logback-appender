@@ -558,6 +558,10 @@ public class CloudWatchAppenderTest {
 		appender.setMaxQueueWaitTimeMillis(1000);
 		appender.setInternalQueueSize(1);
 		appender.setCreateLogDests(true);
+		appender.setEndpointUrl("http://localhost:4566");
+		appender.setRetentionDays(7);
+		appender.setWaitForAllEvents(false);
+		appender.setDisableAwsMetadata(true);
 
 		try {
 			appender.iteratorForAppenders();
@@ -586,6 +590,113 @@ public class CloudWatchAppenderTest {
 		assertFalse(appender.detachAppender("something"));
 		assertTrue(appender.detachAppender(EmergencyAppender.NAME));
 		assertNull(appender.getAppender(EmergencyAppender.NAME));
+	}
+
+	@Test(timeout = 10000)
+	public void testWaitForAllEvents() {
+		CloudWatchAppender appender = new CloudWatchAppender();
+		CloudWatchLogsClient awsLogClient = createMock(CloudWatchLogsClient.class);
+		appender.setAwsLogsClient(awsLogClient);
+
+		// large enough that the writer thread would still be waiting for its batch when we stop the appender
+		appender.setMaxBatchSize(100);
+		appender.setMaxBatchTimeMillis(60000);
+		appender.setRegion("region");
+		final String logGroup = "pfqoejpfqe";
+		appender.setLogGroup(logGroup);
+		final String logStream = "pffqjfqjpoqoejpfqe";
+		appender.setLogStream(logStream);
+		appender.setContext(LOGGER_CONTEXT);
+		PatternLayout layout = new PatternLayout();
+		layout.setContext(LOGGER_CONTEXT);
+		layout.setPattern("%msg");
+		layout.start();
+		appender.setLayout(layout);
+
+		final PutLogEventsResponse response = PutLogEventsResponse.builder().build();
+		expect(awsLogClient.putLogEvents(isA(PutLogEventsRequest.class))).andAnswer(() -> {
+			PutLogEventsRequest request = (PutLogEventsRequest) getCurrentArguments()[0];
+			assertEquals(logGroup, request.logGroupName());
+			assertEquals(logStream, request.logStreamName());
+			List<InputLogEvent> events = request.logEvents();
+			assertEquals(3, events.size());
+			assertEquals("one", events.get(0).message());
+			assertEquals("two", events.get(1).message());
+			assertEquals("three", events.get(2).message());
+			return response;
+		});
+		awsLogClient.close();
+
+		// =====================================
+
+		replay(awsLogClient);
+		appender.start();
+		long timeStamp = System.currentTimeMillis();
+		appender.append(createEvent("name", Level.DEBUG, "one", timeStamp));
+		appender.append(createEvent("name", Level.DEBUG, "two", timeStamp + 1));
+		appender.append(createEvent("name", Level.DEBUG, "three", timeStamp + 2));
+		// the appender should post the queued events instead of dropping them on the floor
+		appender.stop();
+		assertEquals(3, appender.getEventsWrittenCount());
+		verify(awsLogClient);
+	}
+
+	@Test(timeout = 10000)
+	public void testRetentionDays() throws InterruptedException {
+		CloudWatchAppender appender = new CloudWatchAppender();
+		CloudWatchLogsClient logsClient = createMock(CloudWatchLogsClient.class);
+		appender.setTestAwsLogsClient(logsClient);
+
+		appender.setMaxBatchSize(1);
+		appender.setRegion("region");
+		final String logGroup = "pfqoejpfqe";
+		appender.setLogGroup(logGroup);
+		final String logStream = "pffqjfqjpoqoejpfqe";
+		appender.setLogStream(logStream);
+		appender.setContext(LOGGER_CONTEXT);
+		final int retentionDays = 14;
+		appender.setRetentionDays(retentionDays);
+		PatternLayout layout = new PatternLayout();
+		layout.setContext(LOGGER_CONTEXT);
+		layout.setPattern("%msg");
+		layout.start();
+		appender.setLayout(layout);
+
+		DescribeLogGroupsResponse logGroupsResponse =
+				DescribeLogGroupsResponse.builder().logGroups(Collections.emptyList()).build();
+		expect(logsClient.describeLogGroups(isA(DescribeLogGroupsRequest.class))).andReturn(logGroupsResponse);
+		expect(logsClient.createLogGroup(isA(CreateLogGroupRequest.class)))
+				.andReturn(CreateLogGroupResponse.builder().build());
+
+		final PutRetentionPolicyResponse retentionResponse = PutRetentionPolicyResponse.builder().build();
+		expect(logsClient.putRetentionPolicy(isA(PutRetentionPolicyRequest.class))).andAnswer(() -> {
+			PutRetentionPolicyRequest request = (PutRetentionPolicyRequest) getCurrentArguments()[0];
+			assertEquals(logGroup, request.logGroupName());
+			assertEquals(Integer.valueOf(retentionDays), request.retentionInDays());
+			return retentionResponse;
+		});
+
+		DescribeLogStreamsResponse logStreamsResponse =
+				DescribeLogStreamsResponse.builder().logStreams(Collections.emptyList()).build();
+		expect(logsClient.describeLogStreams(isA(DescribeLogStreamsRequest.class))).andReturn(logStreamsResponse);
+		expect(logsClient.createLogStream(isA(CreateLogStreamRequest.class)))
+				.andReturn(CreateLogStreamResponse.builder().build());
+
+		expect(logsClient.putLogEvents(isA(PutLogEventsRequest.class)))
+				.andReturn(PutLogEventsResponse.builder().build())
+				.atLeastOnce();
+		logsClient.close();
+
+		// =====================================
+
+		replay(logsClient);
+		appender.start();
+		appender.append(createEvent("name", Level.DEBUG, "message", System.currentTimeMillis()));
+		while (appender.getEventsWrittenCount() < 1) {
+			Thread.sleep(10);
+		}
+		appender.stop();
+		verify(logsClient);
 	}
 
 	private LoggingEvent createEvent(String name, Level level, String message, Long time) {

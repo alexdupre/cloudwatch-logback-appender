@@ -12,8 +12,9 @@ The following set of tasks should be performed when the library gets released.
 5) Check in all files.
 6) sbt test
 7) sbt publishSigned
-8) sbt sonatypeBundleRelease
-9) create release on github for X.X.X from that tag
+8) sbt sonaUpload
+9) publish the deployment from the Central Portal, or run: sbt sonaRelease
+10) create release on github for X.X.X from that tag
     https://github.com/alexdupre/cloudwatch-logback-appender/tags
 
 -------------------------------------------------------------------------------

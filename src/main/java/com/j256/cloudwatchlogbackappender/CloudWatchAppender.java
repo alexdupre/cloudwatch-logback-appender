@@ -1,5 +1,6 @@
 package com.j256.cloudwatchlogbackappender;
 
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -28,6 +29,7 @@ import software.amazon.awssdk.imds.Ec2MetadataClient;
 import software.amazon.awssdk.imds.Ec2MetadataResponse;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.cloudwatchlogs.CloudWatchLogsClient;
+import software.amazon.awssdk.services.cloudwatchlogs.CloudWatchLogsClientBuilder;
 import software.amazon.awssdk.services.cloudwatchlogs.model.*;
 
 /**
@@ -50,6 +52,10 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 	private static final long DEFAULT_MAX_QUEUE_WAIT_TIME_MILLIS = 100;
 	/** time to wait to initialize which helps when application is starting up */
 	private static final long DEFAULT_INITIAL_WAIT_TIME_MILLIS = 0;
+	/** time to wait for the writer thread to drain its queue when we are stopping */
+	private static final long DRAIN_WAIT_TIME_MILLIS = 5000;
+	/** time to wait for the writer thread to quit when we are not draining its queue */
+	private static final long INTERRUPT_WAIT_TIME_MILLIS = 1000;
 	/** property looked for to find the aws access-key-id */
 	public static final String AWS_ACCESS_KEY_ID_PROPERTY = "cloudwatchappender.aws.accessKeyId";
 	/** property looked for to find the aws secret-key */
@@ -59,10 +65,18 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 	public static final boolean DEFAULT_COPY_EVENTS = true;
 	public static final boolean DEFAULT_PRINT_REJECTED_EVENTS = false;
 	public static final Pattern LOG_GROUP_PATTERN = Pattern.compile("[.\\-_/#A-Za-z0-9]+");
+	public static final boolean DEFAULT_WAIT_FOR_ALL_EVENTS = true;
+	public static final boolean DEFAULT_DISABLE_AWS_METADATA = false;
+
+	/**
+	 * Marker pushed onto the queue to wake up the writer thread when we are stopping. Compared by identity.
+	 */
+	private static final ILoggingEvent SHUTDOWN_EVENT = new LoggingEvent();
 
 	private String accessKeyId;
 	private String secretKey;
 	private String region;
+	private URI endpointUrl;
 	private String logGroupName;
 	private String logStreamName;
 	private Layout<ILoggingEvent> layout;
@@ -77,6 +91,9 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 	private boolean truncateEventMessages = DEFAULT_TRUNCATE_EVENT_MESSAGES;
 	private boolean copyEvents = DEFAULT_COPY_EVENTS;
 	private boolean printRejectedEvents = DEFAULT_PRINT_REJECTED_EVENTS;
+	private int retentionDays;
+	private boolean waitForAllEvents = DEFAULT_WAIT_FOR_ALL_EVENTS;
+	private boolean disableAwsMetadata = DEFAULT_DISABLE_AWS_METADATA;
 
 	private CloudWatchLogsClient awsLogsClient;
 	private CloudWatchLogsClient testAwsLogsClient;
@@ -84,6 +101,8 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 
 	private BlockingQueue<ILoggingEvent> loggingEventQueue;
 	private Thread cloudWatchWriterThread;
+	private Thread shutdownHook;
+	private volatile boolean shutdown;
 	private final ThreadLocal<Boolean> stopMessagesThreadLocal = new ThreadLocal<>();
 	private volatile boolean warningMessagePrinted;
 	private final InputLogEventComparator inputLogEventComparator = new InputLogEventComparator();
@@ -121,21 +140,25 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 			throw new IllegalStateException("Layout was not set for appender");
 		}
 
+		if (disableAwsMetadata) {
+			// stop the converter from reaching out to the ECS metadata service
+			TaskIdConverter.disableLookup();
+		}
+
 		loggingEventQueue = new ArrayBlockingQueue<>(internalQueueSize);
+		shutdown = false;
 
 		// create our writer thread in the background
 		cloudWatchWriterThread = new Thread(new CloudWatchWriter(), getClass().getSimpleName());
 		cloudWatchWriterThread.setDaemon(true);
 		cloudWatchWriterThread.start();
 
-		Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-			cloudWatchWriterThread.interrupt();
-			try {
-				cloudWatchWriterThread.join(5000);
-			} catch (InterruptedException e) {
-				// ignore
-			}
-		}));
+		/*
+		 * The writer thread is a daemon so it would otherwise be killed before it had a chance to post the events that
+		 * are still in the queue.
+		 */
+		shutdownHook = new Thread(this::stop, getClass().getSimpleName() + "Shutdown");
+		Runtime.getRuntime().addShutdownHook(shutdownHook);
 
 		if (emergencyAppender != null && !emergencyAppender.isStarted()) {
 			emergencyAppender.start();
@@ -149,9 +172,23 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 			return;
 		}
 
-		cloudWatchWriterThread.interrupt();
+		removeShutdownHook();
+
+		shutdown = true;
+		long joinMillis;
+		if (waitForAllEvents) {
+			/*
+			 * Wake up the writer thread without interrupting it so that it can post the events that are still in the
+			 * queue instead of aborting whatever request is in flight.
+			 */
+			loggingEventQueue.offer(SHUTDOWN_EVENT);
+			joinMillis = DRAIN_WAIT_TIME_MILLIS;
+		} else {
+			cloudWatchWriterThread.interrupt();
+			joinMillis = INTERRUPT_WAIT_TIME_MILLIS;
+		}
 		try {
-			cloudWatchWriterThread.join(1000);
+			cloudWatchWriterThread.join(joinMillis);
 		} catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
 		}
@@ -223,6 +260,11 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 	// not-required, default is to use the DefaultAWSCredentialsProviderChain
 	public void setSecretKey(String secretKey) {
 		this.secretKey = secretKey;
+	}
+
+	// not-required, default is the standard endpoint for the region
+	public void setEndpointUrl(String endpointUrl) {
+		this.endpointUrl = URI.create(endpointUrl);
 	}
 
 	// required
@@ -302,6 +344,31 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 	// not required, default is false
 	public void setPrintRejectedEvents(boolean printRejectedEvents) {
 		this.printRejectedEvents = printRejectedEvents;
+	}
+
+	/**
+	 * Number of days that the log events are retained for. Only applied to a log-group that this appender creates, so
+	 * that we don't overwrite a retention policy that was configured elsewhere. 0 (the default) means that the
+	 * CloudWatch default of never expiring is used.
+	 */
+	public void setRetentionDays(int retentionDays) {
+		this.retentionDays = retentionDays;
+	}
+
+	/**
+	 * Set to false (default true) to stop the appender immediately instead of waiting for the events that are still
+	 * queued to be written to CloudWatch.
+	 */
+	public void setWaitForAllEvents(boolean waitForAllEvents) {
+		this.waitForAllEvents = waitForAllEvents;
+	}
+
+	/**
+	 * Set to true (default false) if you are not running under EC2 or ECS so that the appender won't try to download
+	 * the instance and task metadata.
+	 */
+	public void setDisableAwsMetadata(boolean disableAwsMetadata) {
+		this.disableAwsMetadata = disableAwsMetadata;
 	}
 
 	// not required, for testing purposes
@@ -413,6 +480,22 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 		return newEvent;
 	}
 
+	/**
+	 * Remove our shutdown hook unless we are being called from inside of it.
+	 */
+	private void removeShutdownHook() {
+		Thread hook = shutdownHook;
+		if (hook == null) {
+			return;
+		}
+		shutdownHook = null;
+		try {
+			Runtime.getRuntime().removeShutdownHook(hook);
+		} catch (IllegalStateException ise) {
+			// the JVM is already shutting down which means that the hook is the one calling us
+		}
+	}
+
 	private void appendToEmergencyAppender(ILoggingEvent event) {
 		if (emergencyAppender != null) {
 			try {
@@ -457,8 +540,12 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 			}
 
 			List<ILoggingEvent> events = new ArrayList<>(maxBatchSize);
-			while (!thread.isInterrupted()) {
+			while (!shutdown && !thread.isInterrupted()) {
 				long batchTimeout = System.currentTimeMillis() + maxBatchTimeMillis;
+				/*
+				 * No shutdown check here on purpose: SHUTDOWN_EVENT is queued behind the events that were appended
+				 * before stop() was called, so waiting for it keeps that last batch together.
+				 */
 				while (!thread.isInterrupted()) {
 					long timeoutMillis = batchTimeout - System.currentTimeMillis();
 					if (timeoutMillis < 0) {
@@ -475,6 +562,9 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 						// wait timed out
 						break;
 					}
+					if (loggingEvent == SHUTDOWN_EVENT) {
+						break;
+					}
 					events.add(loggingEvent);
 					if (events.size() >= maxBatchSize) {
 						// batch size exceeded
@@ -488,7 +578,7 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 			}
 
 			/*
-			 * We have been interrupted so write all of the rest of the events and then quit
+			 * We have been interrupted or stopped so write all of the rest of the events and then quit
 			 */
 
 			while (true) {
@@ -496,6 +586,9 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 				if (event == null) {
 					// nothing else waiting
 					break;
+				}
+				if (event == SHUTDOWN_EVENT) {
+					continue;
 				}
 				events.add(event);
 				if (events.size() >= maxBatchSize) {
@@ -579,20 +672,28 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 			}
 			if (MiscUtils.isBlank(accessKeyId)) {
 				// if we are still blank then use the default credentials provider
-				credentialProvider = DefaultCredentialsProvider.create();
+				// note: build() and not create(), which returns a shared singleton that we would close in stop()
+				credentialProvider = DefaultCredentialsProvider.builder().build();
 			} else {
 				credentialProvider = StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKeyId, secretKey));
 			}
 			CloudWatchLogsClient client;
 			if (testAwsLogsClient == null) {
-				client = CloudWatchLogsClient.builder().credentialsProvider(credentialProvider).region(Region.of(region)).build();
+				CloudWatchLogsClientBuilder builder =
+						CloudWatchLogsClient.builder().credentialsProvider(credentialProvider).region(Region.of(region));
+				if (endpointUrl != null) {
+					builder.endpointOverride(endpointUrl);
+				}
+				client = builder.build();
 			} else {
 				client = testAwsLogsClient;
 			}
-			try {
-				lookupInstanceName();
-			} catch (Exception e) {
-				appendEvent(Level.ERROR, "Problems looking up instance-name", e);
+			if (!disableAwsMetadata) {
+				try {
+					lookupInstanceName();
+				} catch (Exception e) {
+					appendEvent(Level.ERROR, "Problems looking up instance-name", e);
+				}
 			}
 			logStreamName = buildLogStreamName();
 			verifyLogGroupExists(client);
@@ -612,6 +713,13 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 				CreateLogGroupRequest createRequest = CreateLogGroupRequest.builder().logGroupName(logGroupName).build();
 				client.createLogGroup(createRequest);
 				appendEvent(Level.INFO, "Created log-group '" + logGroupName + "'", null);
+				if (retentionDays > 0) {
+					PutRetentionPolicyRequest retentionRequest = PutRetentionPolicyRequest.builder()
+							.logGroupName(logGroupName).retentionInDays(retentionDays).build();
+					client.putRetentionPolicy(retentionRequest);
+					appendEvent(Level.INFO,
+							"Set retention of log-group '" + logGroupName + "' to " + retentionDays + " days", null);
+				}
 			} else {
 				appendEvent(Level.WARN, "Log-group '" + logGroupName + "' doesn't exist and not created", null);
 			}
