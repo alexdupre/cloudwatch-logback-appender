@@ -10,6 +10,13 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
  */
 public class SystemPropertyConverter extends ClassicConverter {
 
+	/**
+	 * Default constructor, used by logback when it builds the conversion word.
+	 */
+	public SystemPropertyConverter() {
+		// for logback
+	}
+
 	private String propertyName;
 
 	@Override

@@ -12,6 +12,13 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
  */
 public class UuidConverter extends ClassicConverter {
 
+	/**
+	 * Default constructor, used by logback when it builds the conversion word.
+	 */
+	public UuidConverter() {
+		// for logback
+	}
+
 	private static String UUID_STRING = UUID.randomUUID().toString();
 
 	@Override

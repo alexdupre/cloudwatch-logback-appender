@@ -60,12 +60,19 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 	public static final String AWS_ACCESS_KEY_ID_PROPERTY = "cloudwatchappender.aws.accessKeyId";
 	/** property looked for to find the aws secret-key */
 	public static final String AWS_SECRET_KEY_PROPERTY = "cloudwatchappender.aws.secretKey";
+	/** default maximum size of an event message before it is truncated or sent to the emergency appender */
 	public static final int DEFAULT_MAX_EVENT_MESSAGE_SIZE = 256 * 1024;
+	/** by default an event message that is too large is truncated */
 	public static final boolean DEFAULT_TRUNCATE_EVENT_MESSAGES = true;
+	/** by default events are copied before being handed to the writer thread */
 	public static final boolean DEFAULT_COPY_EVENTS = true;
+	/** by default rejected events are not printed to stderr */
 	public static final boolean DEFAULT_PRINT_REJECTED_EVENTS = false;
+	/** pattern that a log-group name must match to be accepted by CloudWatch */
 	public static final Pattern LOG_GROUP_PATTERN = Pattern.compile("[.\\-_/#A-Za-z0-9]+");
+	/** by default the queued events are written to CloudWatch before the appender stops */
 	public static final boolean DEFAULT_WAIT_FOR_ALL_EVENTS = true;
+	/** by default the EC2 and ECS metadata services are used to look up the instance and task */
 	public static final boolean DEFAULT_DISABLE_AWS_METADATA = false;
 
 	/**
@@ -107,6 +114,9 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 	private volatile boolean warningMessagePrinted;
 	private final InputLogEventComparator inputLogEventComparator = new InputLogEventComparator();
 
+	/**
+	 * Default constructor, used by logback and spring. Call the setters and then {@link #start()}.
+	 */
 	public CloudWatchAppender() {
 		// for spring
 	}
@@ -252,67 +262,125 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 		}
 	}
 
-	// not-required, default is to use the DefaultAWSCredentialsProviderChain
+	/**
+	 * Not required. If not set then the {@link #AWS_ACCESS_KEY_ID_PROPERTY} system property is consulted and, failing
+	 * that, the default AWS credentials provider chain is used.
+	 * 
+	 * @param accessKeyId AWS API access key-id.
+	 */
 	public void setAccessKeyId(String accessKeyId) {
 		this.accessKeyId = accessKeyId;
 	}
 
-	// not-required, default is to use the DefaultAWSCredentialsProviderChain
+	/**
+	 * Not required. If not set then the {@link #AWS_SECRET_KEY_PROPERTY} system property is consulted and, failing
+	 * that, the default AWS credentials provider chain is used.
+	 * 
+	 * @param secretKey AWS API secret-key.
+	 */
 	public void setSecretKey(String secretKey) {
 		this.secretKey = secretKey;
 	}
 
-	// not-required, default is the standard endpoint for the region
+	/**
+	 * Not required, the standard endpoint for the region is used by default. Set this to talk to something else, for
+	 * example a LocalStack instance.
+	 * 
+	 * @param endpointUrl CloudWatch endpoint to use instead of the standard one for the region.
+	 */
 	public void setEndpointUrl(String endpointUrl) {
 		this.endpointUrl = URI.create(endpointUrl);
 	}
 
-	// required
+	/**
+	 * Required.
+	 * 
+	 * @param region AWS region that the log-group lives in, for example "us-east-1".
+	 */
 	public void setRegion(String region) {
 		this.region = region;
 	}
 
-	// required
+	/**
+	 * Required. The name must match {@link #LOG_GROUP_PATTERN}.
+	 * 
+	 * @param logGroupName CloudWatch log-group that the events are written to.
+	 */
 	public void setLogGroup(String logGroupName) {
 		this.logGroupName = logGroupName;
 	}
 
-	// required
+	/**
+	 * Required. The name is expanded with {@link Ec2PatternLayout} so it can contain conversion words such as
+	 * %instance or %date, and any ':' character is replaced with '_' because CloudWatch rejects it.
+	 * 
+	 * @param logStreamName CloudWatch log-stream that the events are written to.
+	 */
 	public void setLogStream(String logStreamName) {
 		this.logStreamName = logStreamName;
 	}
 
-	// required
+	/**
+	 * Required.
+	 * 
+	 * @param layout Layout used to render each event into the message that is sent to CloudWatch.
+	 */
 	public void setLayout(Layout<ILoggingEvent> layout) {
 		this.layout = layout;
 	}
 
-	// not-required, default is DEFAULT_MAX_BATCH_SIZE
+	/**
+	 * Not required, defaults to 128.
+	 * 
+	 * @param maxBatchSize Maximum number of events written to CloudWatch in a single request.
+	 */
 	public void setMaxBatchSize(int maxBatchSize) {
 		this.maxBatchSize = maxBatchSize;
 	}
 
-	// not-required, default is DEFAULT_MAX_BATCH_TIME_MILLIS
+	/**
+	 * Not required, defaults to 5000.
+	 * 
+	 * @param maxBatchTimeMillis Maximum time in milliseconds spent collecting events before a batch is written.
+	 */
 	public void setMaxBatchTimeMillis(long maxBatchTimeMillis) {
 		this.maxBatchTimeMillis = maxBatchTimeMillis;
 	}
 
-	// not-required, default is DEFAULT_MAX_QUEUE_WAIT_TIME_MILLIS
+	/**
+	 * Not required, defaults to 100.
+	 * 
+	 * @param maxQueueWaitTimeMillis Maximum time in milliseconds to wait when the internal queue is full before the
+	 *        event is handed to the emergency appender.
+	 */
 	public void setMaxQueueWaitTimeMillis(long maxQueueWaitTimeMillis) {
 		this.maxQueueWaitTimeMillis = maxQueueWaitTimeMillis;
 	}
 
-	// not-required, default is DEFAULT_INTERNAL_QUEUE_SIZE
+	/**
+	 * Not required, defaults to 8192.
+	 * 
+	 * @param internalQueueSize Size of the internal queue that holds the events waiting to be written.
+	 */
 	public void setInternalQueueSize(int internalQueueSize) {
 		this.internalQueueSize = internalQueueSize;
 	}
 
-	// not-required, default is DEFAULT_CREATE_LOG_DESTS
+	/**
+	 * Not required, defaults to true.
+	 * 
+	 * @param createLogDests Whether the log-group and log-stream are created if they don't already exist.
+	 */
 	public void setCreateLogDests(boolean createLogDests) {
 		this.createLogDests = createLogDests;
 	}
 
-	// not-required, default is 0
+	/**
+	 * Not required, defaults to 0.
+	 * 
+	 * @param initialWaitTimeMillis Time in milliseconds that the writer thread waits before it starts writing, which
+	 *        helps if the application needs to configure itself first.
+	 */
 	public void setInitialWaitTimeMillis(long initialWaitTimeMillis) {
 		this.initialWaitTimeMillis = initialWaitTimeMillis;
 	}
@@ -327,21 +395,41 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 		this.testAwsLogsClient = testAwsLogsClient;
 	}
 
+	/**
+	 * Not required, defaults to {@link #DEFAULT_MAX_EVENT_MESSAGE_SIZE}.
+	 * 
+	 * @param maxEventMessageSize Maximum size of an event message before it is truncated or handed to the emergency
+	 *        appender, depending on {@link #setTruncateEventMessages(boolean)}.
+	 */
 	public void setMaxEventMessageSize(int maxEventMessageSize) {
 		this.maxEventMessageSize = maxEventMessageSize;
 	}
 
-	// not required, default is true
+	/**
+	 * Not required, defaults to {@link #DEFAULT_TRUNCATE_EVENT_MESSAGES}.
+	 * 
+	 * @param truncateEventMessages Whether an over-sized message is truncated. If false then the event is handed to
+	 *        the emergency appender instead.
+	 */
 	public void setTruncateEventMessages(boolean truncateEventMessages) {
 		this.truncateEventMessages = truncateEventMessages;
 	}
 
-	// not required, default is true
+	/**
+	 * Not required, defaults to {@link #DEFAULT_COPY_EVENTS}.
+	 * 
+	 * @param copyEvents Whether each event is copied before being queued for the writer thread, which avoids races
+	 *        with the thread that logged it.
+	 */
 	public void setCopyEvents(boolean copyEvents) {
 		this.copyEvents = copyEvents;
 	}
 
-	// not required, default is false
+	/**
+	 * Not required, defaults to {@link #DEFAULT_PRINT_REJECTED_EVENTS}.
+	 * 
+	 * @param printRejectedEvents Whether events that the emergency appender didn't handle are printed to stderr.
+	 */
 	public void setPrintRejectedEvents(boolean printRejectedEvents) {
 		this.printRejectedEvents = printRejectedEvents;
 	}
@@ -350,6 +438,8 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 	 * Number of days that the log events are retained for. Only applied to a log-group that this appender creates, so
 	 * that we don't overwrite a retention policy that was configured elsewhere. 0 (the default) means that the
 	 * CloudWatch default of never expiring is used.
+	 * 
+	 * @param retentionDays Number of days to retain the events for, or 0 for never expiring.
 	 */
 	public void setRetentionDays(int retentionDays) {
 		this.retentionDays = retentionDays;
@@ -358,6 +448,8 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 	/**
 	 * Set to false (default true) to stop the appender immediately instead of waiting for the events that are still
 	 * queued to be written to CloudWatch.
+	 * 
+	 * @param waitForAllEvents Whether stop() waits for the queued events to be written.
 	 */
 	public void setWaitForAllEvents(boolean waitForAllEvents) {
 		this.waitForAllEvents = waitForAllEvents;
@@ -366,12 +458,18 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 	/**
 	 * Set to true (default false) if you are not running under EC2 or ECS so that the appender won't try to download
 	 * the instance and task metadata.
+	 * 
+	 * @param disableAwsMetadata Whether the EC2 and ECS metadata lookups are skipped.
 	 */
 	public void setDisableAwsMetadata(boolean disableAwsMetadata) {
 		this.disableAwsMetadata = disableAwsMetadata;
 	}
 
-	// not required, for testing purposes
+	/**
+	 * For testing purposes, override the endpoint that the EC2 metadata service is looked up on.
+	 * 
+	 * @param ec2MetadataServiceEndpoint Endpoint to use instead of the EC2 metadata service.
+	 */
 	public static void setEc2MetadataServiceEndpoint(String ec2MetadataServiceEndpoint) {
 		System.setProperty(SdkSystemSetting.AWS_EC2_METADATA_SERVICE_ENDPOINT.property(),
 				ec2MetadataServiceEndpoint);
@@ -379,6 +477,8 @@ public class CloudWatchAppender extends UnsynchronizedAppenderBase<ILoggingEvent
 
 	/**
 	 * For testing purposes, set the EC2 service override property to the following hostname. Can be "localhost".
+	 * 
+	 * @param testInstanceName Instance name to report instead of looking it up.
 	 */
 	public static void setEc2InstanceName(String testInstanceName) {
 		Ec2InstanceNameConverter.setInstanceName(testInstanceName);

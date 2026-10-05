@@ -13,6 +13,13 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
  */
 public class HostNameConverter extends ClassicConverter {
 
+	/**
+	 * Default constructor, used by logback when it builds the conversion word.
+	 */
+	public HostNameConverter() {
+		// for logback
+	}
+
 	@Override
 	public String convert(ILoggingEvent event) {
 		try {

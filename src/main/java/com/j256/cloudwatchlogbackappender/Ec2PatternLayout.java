@@ -15,6 +15,9 @@ import ch.qos.logback.core.pattern.DynamicConverter;
  */
 public class Ec2PatternLayout extends PatternLayout {
 
+	/**
+	 * Default constructor, used by logback. It registers the additional conversion words that this layout supports.
+	 */
 	public Ec2PatternLayout() {
 		/*
 		 * These are registered in the per-instance map and not in the static PatternLayout.DEFAULT_CONVERTER_SUPPLIER_MAP

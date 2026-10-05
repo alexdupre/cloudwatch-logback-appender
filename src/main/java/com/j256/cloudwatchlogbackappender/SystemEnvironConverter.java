@@ -10,6 +10,13 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
  */
 public class SystemEnvironConverter extends ClassicConverter {
 
+	/**
+	 * Default constructor, used by logback when it builds the conversion word.
+	 */
+	public SystemEnvironConverter() {
+		// for logback
+	}
+
 	private String variableName;
 
 	@Override

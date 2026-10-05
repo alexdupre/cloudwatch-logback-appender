@@ -7,8 +7,15 @@ package com.j256.cloudwatchlogbackappender;
  */
 public class MiscUtils {
 
+	private MiscUtils() {
+		// only here for static methods
+	}
+
 	/**
 	 * Return true if the string is null, empty, or all whitespace, otherwise false.
+	 * 
+	 * @param cs Character sequence to test, which may be null.
+	 * @return True if the sequence is null, empty, or all whitespace, otherwise false.
 	 */
 	public static boolean isBlank(CharSequence cs) {
 		if (cs == null || cs.length() == 0) {

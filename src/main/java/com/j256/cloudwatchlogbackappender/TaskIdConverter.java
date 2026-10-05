@@ -29,6 +29,13 @@ public class TaskIdConverter extends ClassicConverter {
 
 	private static volatile String taskId;
 
+	/**
+	 * Default constructor, used by logback when it builds the conversion word.
+	 */
+	public TaskIdConverter() {
+		// for logback
+	}
+
 	@Override
 	public String convert(ILoggingEvent event) {
 		String id = taskId;
@@ -42,6 +49,8 @@ public class TaskIdConverter extends ClassicConverter {
 	/**
 	 * Set the task-id explicitly, which stops the lookup from the ECS container metadata. Setting it to null restores
 	 * the lookup.
+	 * 
+	 * @param taskId Task-id to report, or null to look it up from the container metadata.
 	 */
 	public static void setTaskId(String taskId) {
 		TaskIdConverter.taskId = taskId;

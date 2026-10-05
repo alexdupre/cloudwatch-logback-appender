@@ -14,11 +14,23 @@ public class Ec2InstanceNameConverter extends ClassicConverter {
 
 	private static String instanceName = DEFAULT_INSTANCE_NAME;
 
+	/**
+	 * Default constructor, used by logback when it builds the conversion word.
+	 */
+	public Ec2InstanceNameConverter() {
+		// for logback
+	}
+
 	@Override
 	public String convert(ILoggingEvent event) {
 		return instanceName;
 	}
 
+	/**
+	 * Set the instance-name explicitly instead of having it looked up from the EC2 metadata.
+	 * 
+	 * @param instanceName Instance-name to report, or null to restore the "unknown" default.
+	 */
 	public static void setInstanceName(String instanceName) {
 		if (instanceName == null) {
 			Ec2InstanceNameConverter.instanceName = DEFAULT_INSTANCE_NAME;
